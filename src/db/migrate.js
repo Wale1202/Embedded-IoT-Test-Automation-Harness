@@ -21,9 +21,15 @@ async function migrate() {
   console.log(`Migrations complete (${files.length} file(s))`);
 }
 
-migrate()
-  .then(() => process.exit(0))
-  .catch((err) => {
-    console.error('Migration failed:', err.message);
-    process.exit(1);
-  });
+// Export for reuse (the test suite runs this against the DB before
+// the suite starts). Only auto-run when invoked directly as a CLI.
+module.exports = { migrate };
+
+if (require.main === module) {
+  migrate()
+    .then(() => process.exit(0))
+    .catch((err) => {
+      console.error('Migration failed:', err.message);
+      process.exit(1);
+    });
+}

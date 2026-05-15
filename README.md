@@ -213,7 +213,28 @@ curl "localhost:3000/api/v1/events?severity=critical"
 - Telemetry for an unregistered device is rejected (`404`) rather than
   stored as an orphan reading — protecting referential integrity.
 
+## Testing
+
+Jest + Supertest, run against a real PostgreSQL instance (API
+integration level — that's where validation, transactions, and the
+event log actually interact).
+
+```bash
+docker compose up -d   # PostgreSQL must be reachable
+npm test               # jest --runInBand  (20 tests, 3 suites)
+```
+
+- **Isolation:** every test starts from a truncated database
+  ([test/setup.js](test/setup.js)), so cases are order-independent.
+- **Traceability:** each test name carries a `TC-xx` ID that maps to
+  [TEST_PLAN.md](TEST_PLAN.md) — the plan and the suite stay in sync.
+- **Why `--runInBand`:** the suite shares one database; serial
+  execution avoids cross-test races.
+
+See [TEST_PLAN.md](TEST_PLAN.md) for the full case list (preconditions,
+steps, expected results) and the latest run log.
+
 ## Next iterations (not in this MVP)
 
-Automated test suite (Jest + Supertest), device simulator with
-fault-injection, sequence-gap detection, CI/CD via GitHub Actions.
+Device simulator with fault-injection, sequence-gap detection, CI/CD via
+GitHub Actions running this suite on every push.

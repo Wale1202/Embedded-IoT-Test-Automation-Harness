@@ -13,7 +13,11 @@ const float = (envVal, fallback) => {
 
 const config = {
   port: num(process.env.PORT, 3000),
+  // Jest sets NODE_ENV=test. If TEST_DATABASE_URL is provided we use it,
+  // so the suite (which TRUNCATEs tables) can run against a throwaway
+  // database instead of the dev one.
   databaseUrl:
+    (process.env.NODE_ENV === 'test' && process.env.TEST_DATABASE_URL) ||
     process.env.DATABASE_URL ||
     'postgres://harness:harness@localhost:5432/harness',
 
