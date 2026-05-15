@@ -27,23 +27,37 @@ later test suite drive the API in-process with Supertest.
 
 ## Project structure
 
+Deliberately flat. A request flows: **route → validation → database →
+event log**. There is no controller/service indirection — each route
+reads top to bottom, which is what makes the failure handling easy to
+walk through.
+
 ```
 src/
-├── app.js                 Express app (routes + middleware wiring)
-├── server.js              Process entrypoint (app.listen)
-├── config.js              Env-driven configuration
+├── app.js            Express app: wires routes + JSON-parse handling
+├── server.js         Entrypoint (app.listen) — split out so tests
+│                      can run the app in-process with Supertest
+├── config.js         Env config + anomaly thresholds (one place)
+├── validation.js     Hard validation (reject) + soft anomalies (flag)
+├── events.js         Device-event log: recordEvent / listEvents
+├── asyncHandler.js   One-line async error forwarding
+├── errorHandler.js   404 + central error responder
 ├── db/
-│   ├── pool.js            Shared PostgreSQL pool
-│   ├── migrate.js         Migration runner (npm run migrate)
-│   └── migrations/001_init.sql
-├── domain/validation.js   Registration + telemetry validators
-├── middleware/errorHandler.js
-├── routes/
-│   ├── devices.js         Register, status, history, offline-sweep
-│   ├── telemetry.js       Telemetry ingest
-│   └── health.js          Liveness + DB check
-└── utils/logger.js
+│   ├── pool.js       Shared PostgreSQL pool
+│   ├── migrate.js    Migration runner (npm run migrate)
+│   └── migrations/   001_init.sql, 002_device_events.sql
+└── routes/
+    ├── telemetry.js  ★ ingest + all 7 failure scenarios (the core)
+    ├── devices.js    register, status, history, events, offline-sweep
+    ├── events.js     global event log
+    └── health.js     liveness + DB check
 ```
+
+Two files do the heavy lifting and are the ones to read first:
+[`routes/telemetry.js`](src/routes/telemetry.js) (the ingest pipeline,
+one labelled block per failure scenario) and
+[`validation.js`](src/validation.js) (every rule, as small pure
+functions that are trivial to unit-test).
 
 ## Setup
 
@@ -90,8 +104,10 @@ Base path: `/api/v1`. All requests/responses are JSON.
 | `POST` | `/api/v1/devices` | Register a device |
 | `GET`  | `/api/v1/devices/:deviceId/status` | Latest device status |
 | `GET`  | `/api/v1/devices/:deviceId/history?limit=N` | Telemetry history (newest first) |
-| `POST` | `/api/v1/devices/offline-sweep` | Mark silent devices offline |
+| `GET`  | `/api/v1/devices/:deviceId/events?severity=&type=&limit=N` | Event log for one device |
+| `POST` | `/api/v1/devices/offline-sweep` | Mark silent devices offline (logs `DEVICE_OFFLINE`) |
 | `POST` | `/api/v1/telemetry` | Receive a telemetry frame |
+| `GET`  | `/api/v1/events?severity=&type=&limit=N` | Global event log |
 
 ### Validation rules
 
@@ -115,6 +131,49 @@ Other notable responses: `409` (device already registered),
 `404` (telemetry/status/history for an unregistered device),
 `503` (`/health` when the DB is unreachable).
 
+## Failure scenarios
+
+Every detected failure is given a clear HTTP response **and** written to
+the `device_events` log (`event_type`, `severity`, `device_id`,
+`description`, `created_at`). Inspect them via the `/events` endpoints.
+
+| # | Scenario | Detection & response | Event logged |
+|---|----------|----------------------|--------------|
+| 1 | Malformed telemetry (bad JSON) | `400` "Request body is not valid JSON" | `MALFORMED_TELEMETRY` (warning) |
+| 2 | Duplicate telemetry | `409` if `(device_id, client timestamp)` already stored | `DUPLICATE_TELEMETRY` (warning) |
+| 3 | Device goes offline | `offline-sweep` marks silent devices offline | `DEVICE_OFFLINE` (warning) |
+| 4 | Extreme sensor values | `400`, rejected (out of physical range) | `EXTREME_VALUE` (critical) |
+| 5 | Missing / wrong-type fields | `400`, all problems listed | `MISSING_FIELDS` (warning) |
+| 6 | Stale / future timestamp | **accepted**, flagged (stale > 300s, or > 60s ahead) | `STALE_TIMESTAMP` (warning) |
+| 7 | Telemetry before registration | `404`, frame rejected | `UNREGISTERED_DEVICE` (error) |
+
+Plus **soft anomalies** — telemetry is accepted and stored, but a
+warning event is logged and echoed in the response `warnings[]`:
+`LOW_BATTERY`, `WEAK_SIGNAL`, `HIGH_TEMPERATURE` (thresholds in `.env`).
+
+Design rule: **invalid data is rejected; degraded-but-valid data is
+stored and flagged.** A real fleet must see a dying battery, not drop it.
+
+## Design choices (interview notes)
+
+- **Reject vs. flag.** Hard validation failures (missing/garbage/extreme)
+  get a `4xx` and are *not* stored. Soft anomalies (low battery, weak
+  signal, stale clock) are *stored* and logged as warnings — losing a
+  degraded reading is worse than keeping it.
+- **Every failure is observable.** A clear HTTP response is for the
+  device; the `device_events` row is for the engineer. The `/events`
+  endpoints are the audit trail you'd inspect after a test run.
+- **Logging never breaks ingest.** `recordEvent` swallows its own
+  errors, and success-path anomaly events are written *after* the
+  telemetry commit — a logging hiccup can't lose a reading.
+- **Atomic ingest.** The unregistered-device check, duplicate check,
+  device update, and telemetry insert run in one transaction, so a
+  rejected frame leaves no partial state.
+- **Flat structure on purpose.** No controller/service layers — for a
+  project this size they would add indirection without value. The
+  trade-off (logic lives in the route) is acceptable here and would be
+  the first thing to revisit if the surface grew.
+
 ## Example session
 
 ```bash
@@ -135,10 +194,14 @@ curl -X POST localhost:3000/api/v1/telemetry \
 
 # Check status / history
 curl localhost:3000/api/v1/devices/SAT-NODE-001/status
-curl localhost:3000/api/v1/devices/SAT-NODE-001/history?limit=10
+curl "localhost:3000/api/v1/devices/SAT-NODE-001/history?limit=10"  # quotes: zsh treats ? as a glob
 
 # Mark devices offline if silent past OFFLINE_THRESHOLD_SECONDS
 curl -X POST localhost:3000/api/v1/devices/offline-sweep
+
+# Inspect the failure/anomaly event log
+curl "localhost:3000/api/v1/devices/SAT-NODE-001/events?limit=20"
+curl "localhost:3000/api/v1/events?severity=critical"
 ```
 
 ## Behaviour notes

@@ -1,11 +1,10 @@
 // Minimal migration runner: executes every .sql file in migrations/
-// in filename order. Each file is written to be idempotent, so re-running
-// is safe (good enough for the MVP; a real project would track applied
-// versions in a schema_migrations table).
+// in filename order. Each file is idempotent, so re-running is safe
+// (good enough here; a real project would track applied versions in a
+// schema_migrations table).
 const fs = require('fs');
 const path = require('path');
 const db = require('./pool');
-const logger = require('../utils/logger');
 
 async function migrate() {
   const dir = path.join(__dirname, 'migrations');
@@ -16,15 +15,15 @@ async function migrate() {
 
   for (const file of files) {
     const sql = fs.readFileSync(path.join(dir, file), 'utf8');
-    logger.info('Applying migration', { file });
+    console.log(`Applying migration: ${file}`);
     await db.query(sql);
   }
-  logger.info('Migrations complete', { count: files.length });
+  console.log(`Migrations complete (${files.length} file(s))`);
 }
 
 migrate()
   .then(() => process.exit(0))
   .catch((err) => {
-    logger.error('Migration failed', { error: err.message });
+    console.error('Migration failed:', err.message);
     process.exit(1);
   });
