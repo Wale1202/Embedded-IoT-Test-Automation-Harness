@@ -39,6 +39,34 @@ describe('Device registration', () => {
   });
 });
 
+describe('Device listing (TC-13, used by the dashboard)', () => {
+  test('TC-13 lists all devices with their latest telemetry', async () => {
+    await seedDevice('LIST-1');
+    await seedDevice('LIST-2');
+    await request(app)
+      .post('/api/v1/telemetry')
+      .send({
+        device_id: 'LIST-1',
+        temperature: 25,
+        signal_strength: -65,
+        battery_level: 70,
+      });
+
+    const res = await request(app).get('/api/v1/devices');
+
+    expect(res.status).toBe(200);
+    expect(res.body.count).toBe(2);
+    const one = res.body.devices.find((d) => d.device_id === 'LIST-1');
+    const two = res.body.devices.find((d) => d.device_id === 'LIST-2');
+    // Latest telemetry is joined in for the device that reported...
+    expect(one.temperature).toBe(25);
+    expect(one.status).toBe('online');
+    // ...and is null for the device that never did.
+    expect(two.temperature).toBeNull();
+    expect(two.status).toBe('offline');
+  });
+});
+
 describe('Device status & history (TC-10)', () => {
   test('TC-10 returns current status and telemetry history newest-first', async () => {
     await seedDevice('DEV-1');

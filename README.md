@@ -50,9 +50,12 @@ src/
 │   └── migrations/   001_init.sql, 002_device_events.sql
 └── routes/
     ├── telemetry.js  ★ ingest + all 7 failure scenarios (the core)
-    ├── devices.js    register, status, history, events, offline-sweep
+    ├── devices.js    list, register, status, history, events, sweep
     ├── events.js     global event log
     └── health.js     liveness + DB check
+
+public/index.html    single-file React verification dashboard (served
+                      same-origin by Express; no build step)
 ```
 
 Two files do the heavy lifting and are the ones to read first:
@@ -104,6 +107,7 @@ Base path: `/api/v1`. All requests/responses are JSON.
 |--------|------|---------|
 | `GET`  | `/health` | Liveness + DB connectivity |
 | `POST` | `/api/v1/devices` | Register a device |
+| `GET`  | `/api/v1/devices` | List all devices + their latest telemetry (dashboard) |
 | `GET`  | `/api/v1/devices/:deviceId/status` | Latest device status |
 | `GET`  | `/api/v1/devices/:deviceId/history?limit=N` | Telemetry history (newest first) |
 | `GET`  | `/api/v1/devices/:deviceId/events?severity=&type=&limit=N` | Event log for one device |
@@ -214,6 +218,32 @@ curl "localhost:3000/api/v1/events?severity=critical"
   run; it marks any device silent beyond the threshold as `offline`.
 - Telemetry for an unregistered device is rejected (`404`) rather than
   stored as an orphan reading — protecting referential integrity.
+
+## Verification dashboard
+
+A single static file ([public/index.html](public/index.html)) — React
+via CDN, **no build step**, served same-origin by Express (so there is
+no CORS). Open it at the backend root:
+
+```bash
+npm start
+open http://localhost:3000        # the dashboard
+```
+
+It shows registered devices, their `online/offline/error` status, last
+seen, latest telemetry values, the event history, and a status filter.
+A small read-only view does not justify a build pipeline — that
+restraint is deliberate.
+
+**It's framed as a verification tool, not a monitoring product:** the
+Event Log is the centrepiece (the evidence trail of failures the harness
+*detected*), with severity counts; the "Run offline-sweep" button is a
+*verification action* — trigger detection, then watch the log record it.
+Typical demo: run `node simulator/device.js invalid` and watch
+`EXTREME_VALUE` events appear, or `offline` then click the sweep.
+
+This is intentionally optional. The backend, tests, and CI are the
+substance; the dashboard just makes the harness's output visible.
 
 ## Device simulator
 

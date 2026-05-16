@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Test Harness — Verification Dashboard</title>
+
+    <!--
+      Deliberately a single static file with React via CDN: a small
+      read-only dashboard does not justify a build pipeline. It is
+      served same-origin by the Express backend, so there is no CORS.
+      The point of this view is to make the harness's *verification*
+      output visible (what failures were detected and logged), not to
+      be a production monitoring product.
+    -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <style>
+      :root {
+        --bg: #f6f7f9;
+        --panel: #ffffff;
+        --border: #e3e6ea;
+        --text: #1c2126;
+        --muted: #6b7480;
+        --online: #1a7f37;
+        --offline: #6b7480;
+        --error: #c0392b;
+        --warning: #b7791f;
+        --critical: #c0392b;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI",
+          Roboto, Helvetica, Arial, sans-serif;
+      }
+      .wrap { max-width: 1100px; margin: 0 auto; padding: 24px; }
+      header h1 { font-size: 20px; margin: 0 0 4px; }
+      header p { margin: 0; color: var(--muted); }
+      .bar {
+        display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+        margin: 20px 0;
+      }
+      button {
+        font: inherit; padding: 6px 12px; border: 1px solid var(--border);
+        background: var(--panel); border-radius: 6px; cursor: pointer;
+      }
+      button:hover { background: #eef0f3; }
+      button.active { background: #1c2126; color: #fff; border-color: #1c2126; }
+      .spacer { flex: 1; }
+      .panel {
+        background: var(--panel); border: 1px solid var(--border);
+        border-radius: 8px; margin-bottom: 20px; overflow: hidden;
+      }
+      .panel h2 {
+        font-size: 14px; margin: 0; padding: 12px 16px;
+        border-bottom: 1px solid var(--border); background: #fbfbfc;
+      }
+      .panel h2 small { color: var(--muted); font-weight: normal; }
+      table { width: 100%; border-collapse: collapse; }
+      th, td {
+        text-align: left; padding: 10px 16px;
+        border-bottom: 1px solid var(--border);
+      }
+      th { font-size: 12px; text-transform: uppercase; color: var(--muted); }
+      tr:last-child td { border-bottom: none; }
+      .badge {
+        display: inline-block; padding: 2px 8px; border-radius: 999px;
+        font-size: 12px; font-weight: 600; text-transform: capitalize;
+      }
+      .s-online { background: #e6f4ea; color: var(--online); }
+      .s-offline { background: #eceef0; color: var(--offline); }
+      .s-error, .s-critical { background: #fbeae8; color: var(--error); }
+      .s-warning { background: #fdf3e3; color: var(--warning); }
+      .summary { display: flex; gap: 16px; padding: 12px 16px; flex-wrap: wrap; }
+      .summary div { color: var(--muted); }
+      .summary b { color: var(--text); }
+      .muted { color: var(--muted); }
+      .empty { padding: 16px; color: var(--muted); }
+      code { background: #eef0f3; padding: 1px 5px; border-radius: 4px; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+      const { useState, useEffect, useCallback } = React;
+      const API = ""; // same origin
+
+      const fmt = (ts) => (ts ? new Date(ts).toLocaleString() : "—");
+      const num = (v) => (v === null || v === undefined ? "—" : v);
+
+      async function getJSON(path) {
+        const res = await fetch(API + path);
+        if (!res.ok) throw new Error(path + " -> HTTP " + res.status);
+        return res.json();
+      }
+
+      function StatusBadge({ status }) {
+        return <span className={"badge s-" + status}>{status}</span>;
+      }
+
+      function App() {
+        const [devices, setDevices] = useState([]);
+        const [events, setEvents] = useState([]);
+        const [filter, setFilter] = useState("all");
+        const [error, setError] = useState(null);
+        const [busy, setBusy] = useState(false);
+
+        const load = useCallback(async () => {
+          try {
+            const d = await getJSON("/api/v1/devices");
+            const e = await getJSON("/api/v1/events?limit=50");
+            setDevices(d.devices);
+            setEvents(e.events);
+            setError(null);
+          } catch (err) {
+            setError(err.message);
+          }
+        }, []);
+
+        // Initial load + light auto-refresh so the view stays current
+        // while you drive the simulator. Read-only: it only observes.
+        useEffect(() => {
+          load();
+          const id = setInterval(load, 5000);
+          return () => clearInterval(id);
+        }, [load]);
+
+        // A verification ACTION: trigger the offline sweep, then watch
+        // the event log record the DEVICE_OFFLINE detections.
+        const runSweep = async () => {
+          setBusy(true);
+          try {
+            await fetch(API + "/api/v1/devices/offline-sweep", {
+              method: "POST",
+            });
+            await load();
+          } finally {
+            setBusy(false);
+          }
+        };
+
+        const shown = devices.filter(
+          (d) => filter === "all" || d.status === filter
+        );
+
+        const sev = events.reduce((a, e) => {
+          a[e.severity] = (a[e.severity] || 0) + 1;
+          return a;
+        }, {});
+
+        return (
+          <div className="wrap">
+            <header>
+              <h1>Embedded/IoT Test Harness — Verification Dashboard</h1>
+              <p>
+                Read-only view of what the harness <b>detected and logged</b>.
+                This is a test/verification tool: the Event Log below is the
+                evidence trail, not a production monitor.
+              </p>
+            </header>
+
+            <div className="bar">
+              {["all", "online", "offline", "error"].map((f) => (
+                <button
+                  key={f}
+                  className={filter === f ? "active" : ""}
+                  onClick={() => setFilter(f)}
+                >
+                  {f === "all" ? "All devices" : f}
+                </button>
+              ))}
+              <div className="spacer" />
+              <button onClick={load}>Refresh</button>
+              <button onClick={runSweep} disabled={busy}>
+                {busy ? "Running…" : "Run offline-sweep (verification action)"}
+              </button>
+            </div>
+
+            {error && (
+              <div className="panel">
+                <div className="empty">
+                  Cannot reach backend ({error}). Is it running on this
+                  origin?
+                </div>
+              </div>
+            )}
+
+            <div className="panel">
+              <h2>
+                Registered devices{" "}
+                <small>
+                  · {shown.length} shown / {devices.length} total
+                </small>
+              </h2>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Device</th>
+                    <th>Firmware</th>
+                    <th>Status</th>
+                    <th>Last seen</th>
+                    <th>Temp °C</th>
+                    <th>Signal dBm</th>
+                    <th>Battery %</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {shown.map((d) => (
+                    <tr key={d.device_id}>
+                      <td>
+                        <b>{d.device_id}</b>
+                        <div className="muted">{d.device_name}</div>
+                      </td>
+                      <td>{d.firmware_version}</td>
+                      <td>
+                        <StatusBadge status={d.status} />
+                      </td>
+                      <td>{fmt(d.last_seen)}</td>
+                      <td>{num(d.temperature)}</td>
+                      <td>{num(d.signal_strength)}</td>
+                      <td>{num(d.battery_level)}</td>
+                    </tr>
+                  ))}
+                  {shown.length === 0 && (
+                    <tr>
+                      <td className="empty" colSpan="7">
+                        No devices for this filter.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="panel">
+              <h2>
+                Event log <small>· detected failures &amp; anomalies</small>
+              </h2>
+              <div className="summary">
+                <div>
+                  <b>{events.length}</b> recent events
+                </div>
+                <div>
+                  critical <b>{sev.critical || 0}</b>
+                </div>
+                <div>
+                  error <b>{sev.error || 0}</b>
+                </div>
+                <div>
+                  warning <b>{sev.warning || 0}</b>
+                </div>
+              </div>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Severity</th>
+                    <th>Type</th>
+                    <th>Device</th>
+                    <th>Description</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {events.map((e) => (
+                    <tr key={e.event_id}>
+                      <td className="muted">{fmt(e.created_at)}</td>
+                      <td>
+                        <span className={"badge s-" + e.severity}>
+                          {e.severity}
+                        </span>
+                      </td>
+                      <td>
+                        <code>{e.event_type}</code>
+                      </td>
+                      <td>{e.device_id || "—"}</td>
+                      <td>{e.description}</td>
+                    </tr>
+                  ))}
+                  {events.length === 0 && (
+                    <tr>
+                      <td className="empty" colSpan="5">
+                        No events yet. Run the simulator in a failure mode
+                        to generate some.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <p className="muted">
+              Drive data with the simulator:{" "}
+              <code>node simulator/device.js invalid</code> · then watch the
+              Event Log capture it.
+            </p>
+          </div>
+        );
+      }
+
+      ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+    </script>
+  </body>
+</html>

@@ -1,6 +1,7 @@
 // Builds the Express app but does NOT start listening. The split
 // (app here, listen in server.js) lets the test suite drive the API
 // in-process with Supertest without binding a real port.
+const path = require('path');
 const express = require('express');
 const devicesRouter = require('./routes/devices');
 const telemetryRouter = require('./routes/telemetry');
@@ -29,6 +30,11 @@ app.use((err, req, res, next) => {
   }
   return next(err);
 });
+
+// Serve the read-only verification dashboard (a single static file).
+// Same origin as the API, so there is no CORS to configure. Unknown
+// paths fall through to the API routers below.
+app.use(express.static(path.join(__dirname, '..', 'public')));
 
 app.use('/health', healthRouter);
 app.use('/api/v1/devices', devicesRouter);

@@ -39,6 +39,31 @@ router.post(
   })
 );
 
+// GET /api/v1/devices  -- list every device with its latest telemetry.
+// The LATERAL join fetches each device's most recent frame in one
+// query, so the dashboard needs a single request instead of N+1.
+router.get(
+  '/',
+  asyncHandler(async (_req, res) => {
+    const r = await db.query(
+      `SELECT d.device_id, d.device_name, d.firmware_version,
+              d.status, d.last_seen,
+              t.temperature, t.signal_strength, t.battery_level,
+              t.timestamp AS latest_telemetry_at
+       FROM devices d
+       LEFT JOIN LATERAL (
+         SELECT temperature, signal_strength, battery_level, timestamp
+         FROM telemetry
+         WHERE device_id = d.device_id
+         ORDER BY timestamp DESC
+         LIMIT 1
+       ) t ON true
+       ORDER BY d.device_id`
+    );
+    return res.json({ count: r.rowCount, devices: r.rows });
+  })
+);
+
 // POST /api/v1/devices/offline-sweep  -- scenario 3: mark every device
 // that has been silent too long as offline, AND log one DEVICE_OFFLINE
 // event per device, in a single statement so they can't diverge.

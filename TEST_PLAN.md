@@ -183,6 +183,17 @@ the (future) device simulator and CI pipeline.
 - **Actual result:** _______________________
 - **Status:** ☐ Pass ☐ Fail
 
+### TC-13 — List all devices (powers the dashboard)
+- **Description:** `GET /api/v1/devices` returns every device with its
+  latest telemetry joined in (one query, no N+1).
+- **Preconditions:** `LIST-1` registered and reporting; `LIST-2`
+  registered, never reported.
+- **Steps:** `GET /api/v1/devices`.
+- **Expected result:** `200`; `count` 2; `LIST-1` is `online` with its
+  latest telemetry values; `LIST-2` is `offline` with null telemetry.
+- **Actual result:** _______________________
+- **Status:** ☐ Pass ☐ Fail
+
 ---
 
 ## 6. Automated run log
@@ -190,12 +201,13 @@ the (future) device simulator and CI pipeline.
 | Date | Build | Command | Result |
 |------|-------|---------|--------|
 | 2026-05-15 | MVP + failure scenarios | `npm test` | **20/20 passed** (3 suites) |
+| 2026-05-16 | + device list endpoint (dashboard) | `npm test` | **21/21 passed** (3 suites) |
 
 Test file → case mapping:
 
 | File | Cases |
 |------|-------|
-| `test/devices.test.js` | TC-01, TC-08, TC-10, TC-11 |
+| `test/devices.test.js` | TC-01, TC-08, TC-10, TC-11, TC-13 |
 | `test/telemetry.test.js` | TC-02, TC-03, TC-04, TC-05, TC-06, TC-07, TC-12 |
 | `test/events.test.js` | TC-09, TC-10 (event-log retrieval) |
 
