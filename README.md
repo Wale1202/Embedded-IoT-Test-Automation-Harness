@@ -1,5 +1,7 @@
 # Embedded/IoT Test Automation Harness — MVP Backend
 
+[![CI](https://github.com/Wale1202/Embedded-IoT-Test-Automation-Harness/actions/workflows/ci.yml/badge.svg)](https://github.com/Wale1202/Embedded-IoT-Test-Automation-Harness/actions/workflows/ci.yml)
+
 Simulates IoT/embedded devices reporting telemetry to a ground backend,
 with strict input validation and a device-liveness sweep. Built to
 demonstrate device-to-backend communication, data integrity, and
@@ -213,6 +215,36 @@ curl "localhost:3000/api/v1/events?severity=critical"
 - Telemetry for an unregistered device is rejected (`404`) rather than
   stored as an orphan reading — protecting referential integrity.
 
+## Device simulator
+
+A single dependency-free script ([simulator/device.js](simulator/device.js))
+that pretends to be an embedded device: it registers itself, then sends
+a telemetry frame every few seconds according to a chosen mode. This is
+how you exercise the failure handling without real hardware.
+
+```bash
+npm start                                  # backend in one terminal
+node simulator/device.js normal            # in another
+node simulator/device.js invalid SIM-9 2   # mode, device id, interval(s)
+```
+
+Positional args: `<mode>` (default `normal`), `[deviceId]` (`SIM-001`),
+`[intervalSeconds]` (`3`). Backend URL is the `BASE_URL` constant at the
+top of the file.
+
+| Mode | Behaviour | Expected backend response |
+|------|-----------|---------------------------|
+| `normal` | nominal readings | `201` accepted |
+| `invalid` | out-of-range values | `400` rejected (`EXTREME_VALUE`) |
+| `offline` | registers, then stays silent | run `offline-sweep` → `DEVICE_OFFLINE` |
+| `duplicate` | resends one frame (same timestamp) | first `201`, then `409` |
+| `low-battery` | valid but battery 1–10 % | `201` + `LOW_BATTERY` warning |
+| `weak-signal` | valid but signal ≤ -101 dBm | `201` + `WEAK_SIGNAL` warning |
+| `random` | random behaviour each tick | mixed |
+
+Each tick prints the mode, HTTP status, and the backend's JSON response,
+so you can watch the harness detect and log every scenario live.
+
 ## Testing
 
 Jest + Supertest, run against a real PostgreSQL instance (API
@@ -233,6 +265,39 @@ npm test               # jest --runInBand  (20 tests, 3 suites)
 
 See [TEST_PLAN.md](TEST_PLAN.md) for the full case list (preconditions,
 steps, expected results) and the latest run log.
+
+## Continuous integration
+
+[.github/workflows/ci.yml](.github/workflows/ci.yml) runs on **every
+push and pull request**: it installs dependencies with `npm ci`, spins
+up a PostgreSQL service container, runs the full Jest suite, and
+**fails the build if any test fails**. The badge at the top reflects the
+latest run on the default branch.
+
+This is a small model of how automated regression testing is integrated
+into a CI/CD pipeline for **embedded or high-reliability systems**:
+
+- **No change is trusted until it is re-verified.** Every push re-runs
+  the entire device-to-backend test plan automatically — the same
+  principle behind regression gates in avionics, space, and medical
+  software, where a human "I tested it locally" is not acceptable
+  evidence.
+- **The pipeline tests against a real database**, not mocks, so the
+  integration risk (validation + transactions + the failure-event log)
+  is exercised exactly as in production — closer to hardware-in-the-loop
+  thinking than a unit-test-only gate.
+- **A red check blocks the change.** In a real embedded programme this
+  is where the build would also block promotion to flashing firmware or
+  deploying the ground segment; here it blocks the merge. Same gate,
+  smaller stakes.
+- **Reproducibility is enforced**, not hoped for: `npm ci` installs
+  from the lockfile and the database is recreated clean each run, so a
+  pass means the same thing on every machine — a prerequisite for any
+  test evidence that has to be auditable.
+
+The result: the test plan in [TEST_PLAN.md](TEST_PLAN.md) stops being a
+document someone *might* run and becomes an automatically enforced
+contract — which is the entire point of CI for safety-relevant code.
 
 ## Next iterations (not in this MVP)
 

@@ -1,0 +1,55 @@
+name: CI
+
+# Run the full regression suite on every push and pull request.
+# A red check here blocks the change from being trusted/merged - the
+# same gate a high-reliability embedded project puts in front of its
+# device-to-backend code.
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: Lint-free build + automated tests
+    runs-on: ubuntu-latest
+
+    # The test suite runs against a real PostgreSQL (it exercises
+    # validation, transactions, and the event log together). GitHub
+    # spins this container up and maps it to localhost:5432.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: harness
+          POSTGRES_PASSWORD: harness
+          POSTGRES_DB: harness
+        ports:
+          - 5432:5432
+        # Don't start the tests until the database is actually ready.
+        options: >-
+          --health-cmd "pg_isready -U harness"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://harness:harness@localhost:5432/harness
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # npm ci = clean, reproducible install from package-lock.json.
+      - name: Install dependencies
+        run: npm ci
+
+      # jest exits non-zero if any test fails, which fails this step
+      # and therefore the whole workflow.
+      - name: Run automated tests
+        run: npm test
