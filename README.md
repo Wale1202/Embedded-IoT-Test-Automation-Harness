@@ -47,25 +47,21 @@ work mirrors real embedded test engineering:
 
 ## 3. System architecture
 
-```
- ┌────────────────────┐   HTTP/JSON    ┌──────────────────────────┐
- │  Device simulator   │  telemetry     │  Express backend         │
- │  (Node, 7 modes)    │ ─────────────▶ │  validate → DB → log     │
- │  normal / invalid / │ ◀───────────── │  (reject vs. flag)       │
- │  duplicate / …      │  status + body └────────────┬─────────────┘
- └────────────────────┘                              │
-                                          ┌──────────▼─────────────┐
-                                          │  PostgreSQL             │
-                                          │  devices · telemetry ·  │
-                                          │  device_events (audit)  │
-                                          └──────────┬─────────────┘
- ┌────────────────────┐  read-only                   │
- │  React dashboard    │ ◀────────────────────────────┘
- │  (single static     │   served same-origin by Express
- │   file, no build)   │
- └────────────────────┘
+```mermaid
+flowchart LR
+    SIM["Device simulator<br/>(7 fault modes)"]
+    API["Backend API<br/>Express + validation"]
+    DB[("PostgreSQL<br/>devices · telemetry · events")]
+    DASH["React dashboard<br/>(optional, read-only)"]
+    TESTS["Automated test suite<br/>Jest + Supertest"]
+    CI["GitHub Actions CI<br/>(push / pull request)"]
 
-      GitHub Actions CI: every push/PR → real Postgres → npm test
+    SIM -->|HTTP/JSON telemetry| API
+    API -->|read / write| DB
+    DASH -->|reads via API| API
+    TESTS -->|drives in-process| API
+    TESTS -->|verifies state| DB
+    CI -->|runs on every push/PR| TESTS
 ```
 
 **Request flow:** `route → validation → database → event log`. The
