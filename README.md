@@ -1,335 +1,266 @@
-# Embedded/IoT Test Automation Harness — MVP Backend
+# Embedded/IoT Test Automation Harness
 
 [![CI](https://github.com/Wale1202/Embedded-IoT-Test-Automation-Harness/actions/workflows/ci.yml/badge.svg)](https://github.com/Wale1202/Embedded-IoT-Test-Automation-Harness/actions/workflows/ci.yml)
 
-Simulates IoT/embedded devices reporting telemetry to a ground backend,
-with strict input validation and a device-liveness sweep. Built to
-demonstrate device-to-backend communication, data integrity, and
-verification — the core concerns of an embedded test engineer.
+A backend that simulates embedded/IoT devices reporting telemetry to a
+"ground" server, focused on **verifying the device-to-backend data
+path** — validation, failure detection, and an auditable event trail —
+rather than just collecting data.
 
-## Tech stack
+> **Scope:** this is a graduate portfolio project, intentionally scoped
+> as an MVP. It is not a product. The goal is to demonstrate testing and
+> verification thinking on a realistic device→backend problem, with the
+> reasoning written down rather than hidden.
 
-- Node.js + Express
-- PostgreSQL (`pg`)
-- Plain JS, dependency-light, structured for testability
+---
 
-## Architecture
+## 1. Why I built it
+
+I'm aiming for a graduate **Embedded Test Engineer** role in
+aerospace / space communications. Most embedded test work isn't writing
+firmware — it's proving that a device's data survives an unreliable link
+and that the ground software correctly handles every way that data can
+arrive *wrong*.
+
+I wanted a project that let me practise exactly that: defining failure
+modes, building automated checks for them, and being honest about scope
+and trade-offs. Telemetry ingest is a clean stand-in for a real
+spacecraft/sensor downlink without needing hardware.
+
+## 2. How it relates to embedded software testing & device-to-backend validation
+
+The simulated device is the "spacecraft", the backend is the "ground
+segment", and the test suite is the verification system. The interesting
+work mirrors real embedded test engineering:
+
+- **Data integrity at the boundary** — every telemetry frame is
+  validated against physical sensor limits before it is trusted.
+- **Fault injection** — the simulator deliberately produces malformed,
+  duplicate, stale, and out-of-range frames on demand, the software
+  equivalent of a bench test rig feeding bad signals into a DUT.
+- **Detect, respond, *and record*** — a real programme needs evidence
+  of what failed and when, so every detected failure is written to a
+  `device_events` audit table, not just rejected.
+- **Requirements → tests → evidence** — each failure scenario has a test
+  case ID that maps 1:1 from [TEST_PLAN.md](TEST_PLAN.md) to the
+  automated suite, the lightweight version of V&V traceability.
+
+## 3. System architecture
 
 ```
-Device  ──POST telemetry──▶  Express API  ──▶  PostgreSQL
-                              (validate →        devices
-                               persist →         telemetry
-                               update last_seen)
-                                   ▲
-                  offline-sweep ───┘  (marks silent devices offline)
+ ┌────────────────────┐   HTTP/JSON    ┌──────────────────────────┐
+ │  Device simulator   │  telemetry     │  Express backend         │
+ │  (Node, 7 modes)    │ ─────────────▶ │  validate → DB → log     │
+ │  normal / invalid / │ ◀───────────── │  (reject vs. flag)       │
+ │  duplicate / …      │  status + body └────────────┬─────────────┘
+ └────────────────────┘                              │
+                                          ┌──────────▼─────────────┐
+                                          │  PostgreSQL             │
+                                          │  devices · telemetry ·  │
+                                          │  device_events (audit)  │
+                                          └──────────┬─────────────┘
+ ┌────────────────────┐  read-only                   │
+ │  React dashboard    │ ◀────────────────────────────┘
+ │  (single static     │   served same-origin by Express
+ │   file, no build)   │
+ └────────────────────┘
+
+      GitHub Actions CI: every push/PR → real Postgres → npm test
 ```
 
-`src/app.js` builds the app; `src/server.js` starts it. The split lets a
-later test suite drive the API in-process with Supertest.
-
-## Project structure
-
-Deliberately flat. A request flows: **route → validation → database →
-event log**. There is no controller/service indirection — each route
-reads top to bottom, which is what makes the failure handling easy to
-walk through.
+**Request flow:** `route → validation → database → event log`. The
+structure is deliberately flat — there is no controller/service
+indirection — so each route reads top to bottom. For a project this size
+that indirection would add explanation cost without value; it's the
+first thing I'd revisit if the surface grew.
 
 ```
 src/
-├── app.js            Express app: wires routes + JSON-parse handling
-├── server.js         Entrypoint (app.listen) — split out so tests
-│                      can run the app in-process with Supertest
+├── app.js            Express wiring (routes, JSON-parse handling, static)
+├── server.js         Entrypoint — split from app.js so tests run in-process
 ├── config.js         Env config + anomaly thresholds (one place)
 ├── validation.js     Hard validation (reject) + soft anomalies (flag)
 ├── events.js         Device-event log: recordEvent / listEvents
 ├── asyncHandler.js   One-line async error forwarding
 ├── errorHandler.js   404 + central error responder
-├── db/
-│   ├── pool.js       Shared PostgreSQL pool
-│   ├── migrate.js    Migration runner (npm run migrate)
-│   └── migrations/   001_init.sql, 002_device_events.sql
+├── db/               pool, migration runner, SQL migrations
 └── routes/
-    ├── telemetry.js  ★ ingest + all 7 failure scenarios (the core)
+    ├── telemetry.js  ★ ingest + all 7 failure scenarios (the core file)
     ├── devices.js    list, register, status, history, events, sweep
     ├── events.js     global event log
     └── health.js     liveness + DB check
-
-public/index.html    single-file React verification dashboard (served
-                      same-origin by Express; no build step)
+public/index.html     single-file React verification dashboard
+simulator/device.js   fault-injecting device simulator
+test/                 Jest + Supertest suite + shared DB helpers
 ```
 
-Two files do the heavy lifting and are the ones to read first:
-[`routes/telemetry.js`](src/routes/telemetry.js) (the ingest pipeline,
-one labelled block per failure scenario) and
-[`validation.js`](src/validation.js) (every rule, as small pure
-functions that are trivial to unit-test).
+The two files worth reading first are
+[src/routes/telemetry.js](src/routes/telemetry.js) (one labelled block
+per failure scenario) and [src/validation.js](src/validation.js) (every
+rule as small, testable functions).
 
-## Setup
-
-1. **Install dependencies**
-
-   ```bash
-   npm install
-   ```
-
-2. **Start PostgreSQL** (Docker is easiest):
-
-   ```bash
-   docker compose up -d
-   ```
-
-3. **Configure environment**
-
-   ```bash
-   cp .env.example .env
-   # defaults match docker-compose.yml; edit if needed
-   ```
-
-4. **Create the schema**
-
-   ```bash
-   npm run migrate
-   ```
-
-5. **Run the server**
-
-   ```bash
-   npm start      # or: npm run dev  (auto-restart on change)
-   ```
-
-   The API is now on `http://localhost:3000`.
-
-## API
-
-Base path: `/api/v1`. All requests/responses are JSON.
+### API endpoints
 
 | Method | Path | Purpose |
 |--------|------|---------|
 | `GET`  | `/health` | Liveness + DB connectivity |
 | `POST` | `/api/v1/devices` | Register a device |
-| `GET`  | `/api/v1/devices` | List all devices + their latest telemetry (dashboard) |
-| `GET`  | `/api/v1/devices/:deviceId/status` | Latest device status |
-| `GET`  | `/api/v1/devices/:deviceId/history?limit=N` | Telemetry history (newest first) |
-| `GET`  | `/api/v1/devices/:deviceId/events?severity=&type=&limit=N` | Event log for one device |
-| `POST` | `/api/v1/devices/offline-sweep` | Mark silent devices offline (logs `DEVICE_OFFLINE`) |
+| `GET`  | `/api/v1/devices` | List all devices + latest telemetry |
+| `GET`  | `/api/v1/devices/:id/status` | Latest device status |
+| `GET`  | `/api/v1/devices/:id/history?limit=N` | Telemetry history (newest first) |
+| `GET`  | `/api/v1/devices/:id/events` | Event log for one device |
+| `POST` | `/api/v1/devices/offline-sweep` | Mark silent devices offline |
 | `POST` | `/api/v1/telemetry` | Receive a telemetry frame |
 | `GET`  | `/api/v1/events?severity=&type=&limit=N` | Global event log |
 
-### Validation rules
+## 4. Key features
 
-| Field | Rule | On failure |
-|-------|------|-----------|
-| `device_id` | required, non-empty string | `400`, clear message |
-| `temperature` | finite number, **-55 to 150 °C** | `400` |
-| `battery_level` | finite number, **0 to 100 %** | `400` |
-| `signal_strength` | finite number, **-120 to 0 dBm** (RSSI) | `400` |
+- **Strict input validation** with clear, complete error messages
+  (every problem in one response, not just the first).
+- **Reject vs. flag rule** — invalid data is rejected (`4xx`);
+  degraded-but-valid data (low battery, weak signal, stale clock) is
+  *stored and flagged*. Losing a dying-battery reading is worse than
+  keeping it.
+- **Audit trail** — every detected failure/anomaly is written to
+  `device_events` (type, severity, device, description, timestamp) and
+  is queryable via the API.
+- **Atomic ingest** — the unregistered check, duplicate check, device
+  update, and telemetry insert run in one transaction, so a rejected
+  frame leaves no partial state.
+- **Liveness sweep** — marks devices offline once silent past a
+  threshold and logs the transition.
+- **Fault-injecting simulator** and a **read-only verification
+  dashboard**, so the behaviour is observable without hardware.
 
-Validation reports **all** problems in one response so a misbehaving
-device can be diagnosed in a single round trip:
+## 5. Failure scenarios tested
 
-```json
-{ "error": "Validation failed",
-  "details": ["temperature 999 is out of range [-55, 150] °C",
-              "battery_level 140 is out of range [0, 100] %"] }
-```
+| # | Scenario | Response | Event logged |
+|---|----------|----------|--------------|
+| 1 | Malformed telemetry (bad JSON) | `400` | `MALFORMED_TELEMETRY` (warning) |
+| 2 | Duplicate telemetry | `409` | `DUPLICATE_TELEMETRY` (warning) |
+| 3 | Device goes offline | sweep → offline | `DEVICE_OFFLINE` (warning) |
+| 4 | Extreme sensor values | `400`, rejected | `EXTREME_VALUE` (critical) |
+| 5 | Missing / wrong-type fields | `400`, all listed | `MISSING_FIELDS` (warning) |
+| 6 | Stale / future timestamp | **accepted**, flagged | `STALE_TIMESTAMP` (warning) |
+| 7 | Telemetry before registration | `404`, rejected | `UNREGISTERED_DEVICE` (error) |
 
-Other notable responses: `409` (device already registered),
-`404` (telemetry/status/history for an unregistered device),
-`503` (`/health` when the DB is unreachable).
+Plus **soft anomalies** — accepted and stored, but flagged in the
+response and the log: `LOW_BATTERY`, `WEAK_SIGNAL`, `HIGH_TEMPERATURE`
+(thresholds configurable in `.env`).
 
-## Failure scenarios
+## 6. Test strategy
 
-Every detected failure is given a clear HTTP response **and** written to
-the `device_events` log (`event_type`, `severity`, `device_id`,
-`description`, `created_at`). Inspect them via the `/events` endpoints.
+- **Level:** API integration tests (Express driven in-process with
+  Supertest) against a **real PostgreSQL** — not mocks — because the
+  risk lives in how validation, transactions, and the event log
+  interact, and that's exactly what mocks would hide.
+- **Isolation:** every test starts from a truncated database, so cases
+  are order-independent and repeatable.
+- **Traceability:** each test name carries a `TC-xx` ID that maps to
+  [TEST_PLAN.md](TEST_PLAN.md) (preconditions, steps, expected results),
+  so the plan and the suite cannot silently drift apart.
+- **Negative-first:** most tests target failure paths, not the happy
+  path — the ratio that distinguishes test engineering from feature
+  testing.
+- **Serial execution** (`--runInBand`) is a deliberate choice: the suite
+  shares one database, so parallel workers would race.
 
-| # | Scenario | Detection & response | Event logged |
-|---|----------|----------------------|--------------|
-| 1 | Malformed telemetry (bad JSON) | `400` "Request body is not valid JSON" | `MALFORMED_TELEMETRY` (warning) |
-| 2 | Duplicate telemetry | `409` if `(device_id, client timestamp)` already stored | `DUPLICATE_TELEMETRY` (warning) |
-| 3 | Device goes offline | `offline-sweep` marks silent devices offline | `DEVICE_OFFLINE` (warning) |
-| 4 | Extreme sensor values | `400`, rejected (out of physical range) | `EXTREME_VALUE` (critical) |
-| 5 | Missing / wrong-type fields | `400`, all problems listed | `MISSING_FIELDS` (warning) |
-| 6 | Stale / future timestamp | **accepted**, flagged (stale > 300s, or > 60s ahead) | `STALE_TIMESTAMP` (warning) |
-| 7 | Telemetry before registration | `404`, frame rejected | `UNREGISTERED_DEVICE` (error) |
+Current status: **21 tests, 3 suites, all passing** (see the run log in
+[TEST_PLAN.md](TEST_PLAN.md)).
 
-Plus **soft anomalies** — telemetry is accepted and stored, but a
-warning event is logged and echoed in the response `warnings[]`:
-`LOW_BATTERY`, `WEAK_SIGNAL`, `HIGH_TEMPERATURE` (thresholds in `.env`).
+## 7. How to run the backend
 
-Design rule: **invalid data is rejected; degraded-but-valid data is
-stored and flagged.** A real fleet must see a dying battery, not drop it.
-
-## Design choices (interview notes)
-
-- **Reject vs. flag.** Hard validation failures (missing/garbage/extreme)
-  get a `4xx` and are *not* stored. Soft anomalies (low battery, weak
-  signal, stale clock) are *stored* and logged as warnings — losing a
-  degraded reading is worse than keeping it.
-- **Every failure is observable.** A clear HTTP response is for the
-  device; the `device_events` row is for the engineer. The `/events`
-  endpoints are the audit trail you'd inspect after a test run.
-- **Logging never breaks ingest.** `recordEvent` swallows its own
-  errors, and success-path anomaly events are written *after* the
-  telemetry commit — a logging hiccup can't lose a reading.
-- **Atomic ingest.** The unregistered-device check, duplicate check,
-  device update, and telemetry insert run in one transaction, so a
-  rejected frame leaves no partial state.
-- **Flat structure on purpose.** No controller/service layers — for a
-  project this size they would add indirection without value. The
-  trade-off (logic lives in the route) is acceptable here and would be
-  the first thing to revisit if the surface grew.
-
-## Example session
+Requirements: Node.js ≥ 18, Docker (for PostgreSQL).
 
 ```bash
-# Register a device
-curl -X POST localhost:3000/api/v1/devices \
-  -H 'Content-Type: application/json' \
-  -d '{"device_id":"SAT-NODE-001","device_name":"Edge Sensor 1","firmware_version":"1.2.0"}'
-
-# Send a telemetry frame
-curl -X POST localhost:3000/api/v1/telemetry \
-  -H 'Content-Type: application/json' \
-  -d '{"device_id":"SAT-NODE-001","temperature":21.4,"signal_strength":-78,"battery_level":87}'
-
-# Rejected: out-of-range values
-curl -X POST localhost:3000/api/v1/telemetry \
-  -H 'Content-Type: application/json' \
-  -d '{"device_id":"SAT-NODE-001","temperature":999,"signal_strength":50,"battery_level":140}'
-
-# Check status / history
-curl localhost:3000/api/v1/devices/SAT-NODE-001/status
-curl "localhost:3000/api/v1/devices/SAT-NODE-001/history?limit=10"  # quotes: zsh treats ? as a glob
-
-# Mark devices offline if silent past OFFLINE_THRESHOLD_SECONDS
-curl -X POST localhost:3000/api/v1/devices/offline-sweep
-
-# Inspect the failure/anomaly event log
-curl "localhost:3000/api/v1/devices/SAT-NODE-001/events?limit=20"
-curl "localhost:3000/api/v1/events?severity=critical"
+npm install
+docker compose up -d            # PostgreSQL
+cp .env.example .env            # defaults match docker-compose.yml
+npm run migrate                 # create the schema
+npm start                       # API on http://localhost:3000
 ```
 
-## Behaviour notes
+`GET http://localhost:3000/` serves the dashboard;
+`GET /health` reports DB connectivity.
 
-- A device is `offline` at registration and flips to `online` on its
-  first telemetry frame (which also sets `last_seen`).
-- `offline-sweep` is the liveness check a scheduled monitoring job would
-  run; it marks any device silent beyond the threshold as `offline`.
-- Telemetry for an unregistered device is rejected (`404`) rather than
-  stored as an orphan reading — protecting referential integrity.
+## 8. How to run the device simulator
 
-## Verification dashboard
-
-A single static file ([public/index.html](public/index.html)) — React
-via CDN, **no build step**, served same-origin by Express (so there is
-no CORS). Open it at the backend root:
+With the backend running, in another terminal:
 
 ```bash
-npm start
-open http://localhost:3000        # the dashboard
-```
-
-It shows registered devices, their `online/offline/error` status, last
-seen, latest telemetry values, the event history, and a status filter.
-A small read-only view does not justify a build pipeline — that
-restraint is deliberate.
-
-**It's framed as a verification tool, not a monitoring product:** the
-Event Log is the centrepiece (the evidence trail of failures the harness
-*detected*), with severity counts; the "Run offline-sweep" button is a
-*verification action* — trigger detection, then watch the log record it.
-Typical demo: run `node simulator/device.js invalid` and watch
-`EXTREME_VALUE` events appear, or `offline` then click the sweep.
-
-This is intentionally optional. The backend, tests, and CI are the
-substance; the dashboard just makes the harness's output visible.
-
-## Device simulator
-
-A single dependency-free script ([simulator/device.js](simulator/device.js))
-that pretends to be an embedded device: it registers itself, then sends
-a telemetry frame every few seconds according to a chosen mode. This is
-how you exercise the failure handling without real hardware.
-
-```bash
-npm start                                  # backend in one terminal
-node simulator/device.js normal            # in another
+node simulator/device.js normal            # nominal telemetry
 node simulator/device.js invalid SIM-9 2   # mode, device id, interval(s)
 ```
 
-Positional args: `<mode>` (default `normal`), `[deviceId]` (`SIM-001`),
-`[intervalSeconds]` (`3`). Backend URL is the `BASE_URL` constant at the
-top of the file.
+Positional args: `<mode> [deviceId] [intervalSeconds]`. Modes:
+`normal`, `invalid`, `offline`, `duplicate`, `low-battery`,
+`weak-signal`, `random`. It registers the device, then sends a frame on
+a timer and prints the backend's response each tick — so you can watch
+the harness detect and log each scenario live.
 
-| Mode | Behaviour | Expected backend response |
-|------|-----------|---------------------------|
-| `normal` | nominal readings | `201` accepted |
-| `invalid` | out-of-range values | `400` rejected (`EXTREME_VALUE`) |
-| `offline` | registers, then stays silent | run `offline-sweep` → `DEVICE_OFFLINE` |
-| `duplicate` | resends one frame (same timestamp) | first `201`, then `409` |
-| `low-battery` | valid but battery 1–10 % | `201` + `LOW_BATTERY` warning |
-| `weak-signal` | valid but signal ≤ -101 dBm | `201` + `WEAK_SIGNAL` warning |
-| `random` | random behaviour each tick | mixed |
-
-Each tick prints the mode, HTTP status, and the backend's JSON response,
-so you can watch the harness detect and log every scenario live.
-
-## Testing
-
-Jest + Supertest, run against a real PostgreSQL instance (API
-integration level — that's where validation, transactions, and the
-event log actually interact).
+## 9. How to run the automated tests
 
 ```bash
-docker compose up -d   # PostgreSQL must be reachable
-npm test               # jest --runInBand  (20 tests, 3 suites)
+docker compose up -d            # PostgreSQL must be reachable
+npm test                        # jest --runInBand
 ```
 
-- **Isolation:** every test starts from a truncated database
-  ([test/setup.js](test/setup.js)), so cases are order-independent.
-- **Traceability:** each test name carries a `TC-xx` ID that maps to
-  [TEST_PLAN.md](TEST_PLAN.md) — the plan and the suite stay in sync.
-- **Why `--runInBand`:** the suite shares one database; serial
-  execution avoids cross-test races.
+The suite applies the schema automatically and truncates tables between
+tests. Point it at a throwaway database via `TEST_DATABASE_URL` — it is
+destructive by design.
 
-See [TEST_PLAN.md](TEST_PLAN.md) for the full case list (preconditions,
-steps, expected results) and the latest run log.
-
-## Continuous integration
+## 10. CI/CD workflow
 
 [.github/workflows/ci.yml](.github/workflows/ci.yml) runs on **every
-push and pull request**: it installs dependencies with `npm ci`, spins
-up a PostgreSQL service container, runs the full Jest suite, and
-**fails the build if any test fails**. The badge at the top reflects the
-latest run on the default branch.
+push and pull request**. It installs dependencies with `npm ci`, starts
+a PostgreSQL service container, runs the full Jest suite, and **fails
+the build if any test fails**. The badge at the top reflects the latest
+run on the default branch.
 
-This is a small model of how automated regression testing is integrated
-into a CI/CD pipeline for **embedded or high-reliability systems**:
+This is a small model of how regression testing gates change in
+high-reliability embedded work: no change is trusted until it is
+re-verified, the pipeline tests against a real database (closer to
+hardware-in-the-loop than a unit-test-only gate), and reproducibility is
+enforced (`npm ci` + a clean DB each run) so a pass means the same thing
+on every machine. The test plan stops being a document someone *might*
+run and becomes an enforced contract.
 
-- **No change is trusted until it is re-verified.** Every push re-runs
-  the entire device-to-backend test plan automatically — the same
-  principle behind regression gates in avionics, space, and medical
-  software, where a human "I tested it locally" is not acceptable
-  evidence.
-- **The pipeline tests against a real database**, not mocks, so the
-  integration risk (validation + transactions + the failure-event log)
-  is exercised exactly as in production — closer to hardware-in-the-loop
-  thinking than a unit-test-only gate.
-- **A red check blocks the change.** In a real embedded programme this
-  is where the build would also block promotion to flashing firmware or
-  deploying the ground segment; here it blocks the merge. Same gate,
-  smaller stakes.
-- **Reproducibility is enforced**, not hoped for: `npm ci` installs
-  from the lockfile and the database is recreated clean each run, so a
-  pass means the same thing on every machine — a prerequisite for any
-  test evidence that has to be auditable.
+## 11. What I learned
 
-The result: the test plan in [TEST_PLAN.md](TEST_PLAN.md) stops being a
-document someone *might* run and becomes an automatically enforced
-contract — which is the entire point of CI for safety-relevant code.
+- **A failing test isn't always a code bug.** My first offline-detection
+  test failed; the cause was a flawed *precondition* (it seeded an
+  already-offline device), not the code. Recognising that — and fixing
+  the test to model the real *online → silent* transition — was the most
+  useful lesson, and it's documented in TEST_PLAN.md §7.
+- **Observability has to be non-fatal.** Event logging must never break
+  the request it observes, so `recordEvent` swallows its own errors and
+  success-path anomaly events are logged *after* the telemetry commit —
+  a logging hiccup can't lose a reading.
+- **"Reject vs. flag" is a real design decision**, not an afterthought.
+  Deciding which failures are fatal and which are degraded-but-keep
+  changed the schema and the API contract.
+- **Test against the real dependency.** Mocking PostgreSQL would have
+  hidden exactly the transaction/constraint behaviour I most needed to
+  verify.
+- **Simplicity is a feature.** I deliberately removed a
+  controller/service layer I had added — for this size it was
+  indirection I'd have to justify without benefit. Being able to explain
+  *why* the structure is flat matters as much as the code.
 
-## Next iterations (not in this MVP)
+## 12. Future improvements
 
-Device simulator with fault-injection, sequence-gap detection, CI/CD via
-GitHub Actions running this suite on every push.
+- **True data-integrity checks**: per-frame CRC and monotonic sequence
+  numbers with gap detection (closer to real telemetry framing).
+- **Transport realism**: an MQTT or binary path alongside HTTP/JSON.
+- **Auth**: per-device API keys instead of an open ingest endpoint.
+- **Migration versioning**: a `schema_migrations` table instead of
+  idempotent re-runs.
+- **Load / soak testing**: sustained multi-device throughput with
+  latency and loss assertions.
+- **CI matrix**: test on multiple Node versions; add lint + coverage
+  gates.
+- **Dashboard**: pagination and time-range filtering on the event log.
+
+---
+
+Related docs: [TEST_PLAN.md](TEST_PLAN.md) (full test cases and run log).
